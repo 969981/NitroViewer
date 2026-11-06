@@ -1,0 +1,245 @@
+# Keep this mirror current with turtleisaac/NitroViewer; publish tested binaries in this repo.
+# This workflow builds the assets itself. GitHub_TOKEN-created releases do not fire
+# the upstream release-desktop.yml workflow, avoiding duplicate release pipelines.
+name: Mirror upstream and release desktop builds
+
+on:
+  schedule:
+    - cron: '13,43 * * * *'
+  workflow_dispatch:
+    inputs:
+      release_current:
+        description: 'Publish the current upstream revision even without upstream changes'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nitroviewer-mirror-release
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == '969981/NitroViewer'
+    name: Sync upstream main
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      changed: ${{ steps.sync.outputs.changed }}
+      commit: ${{ steps.sync.outputs.commit }}
+      upstream: ${{ steps.sync.outputs.upstream }}
+      nds4j: ${{ steps.sync.outputs.nds4j }}
+      version: ${{ steps.sync.outputs.version }}
+      tag: ${{ steps.sync.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Merge new changes and prepare snapshot version
+        id: sync
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_CURRENT: ${{ inputs.release_current && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/turtleisaac/NitroViewer.git
+          git fetch --no-tags upstream main
+          upstream_sha=$(git rev-parse upstream/main)
+          updated=false
+          if ! git merge-base --is-ancestor "$upstream_sha" HEAD; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            # Preserve mirror changes. On a conflict, fail rather than force-update.
+            git merge --no-ff -m "chore(sync): upstream $upstream_sha" upstream/main
+            git push origin HEAD:main
+            updated=true
+          fi
+          if [[ "$updated" == 'false' && "$RELEASE_CURRENT" != 'true' ]]; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            echo "No new upstream commits ($upstream_sha)."
+            exit 0
+          fi
+          # A valid semver is required by npm version and Electron app updates.
+          # The bumped patch and upstream commit timestamp make newer snapshots newer.
+          base=$(node -p "require('./web/package.json').version.split(/[+-]/)[0]")
+          IFS=. read -r major minor patch <<< "$base"
+          [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ && "$patch" =~ ^[0-9]+$ ]] || exit 1
+          timestamp=$(git show -s --format=%ct upstream/main)
+          version="$major.$minor.$((10#$patch + 1))-sync.$timestamp.${upstream_sha:0:12}"
+          tag="v$version"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            echo "Already released $tag."
+            exit 0
+          fi
+          nds4j_sha=$(git ls-remote https://github.com/turtleisaac/Nds4j.git refs/heads/main | cut -f1)
+          [[ "$nds4j_sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'Could not pin Nds4j revision'; exit 1; }
+          {
+            echo 'changed=true'
+            echo "commit=$(git rev-parse HEAD)"
+            echo "upstream=$upstream_sha"
+            echo "nds4j=$nds4j_sha"
+            echo "version=$version"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+          echo "Queued release $tag from $upstream_sha with Nds4j $nds4j_sha"
+
+  build:
+    name: Desktop - ${{ matrix.os }}
+    needs: sync
+    if: needs.sync.outputs.changed == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: mac
+            electron_args: --mac --arm64 --x64
+          - os: windows-latest
+            target: windows
+            electron_args: --win --x64 --arm64
+          - os: ubuntu-latest
+            target: linux
+            electron_args: --linux --x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - name: Checkout exact synced revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.sync.outputs.commit }}
+          path: NitroViewer
+      - name: Checkout pinned Nds4j dependency
+        uses: actions/checkout@v4
+        with:
+          repository: turtleisaac/Nds4j
+          ref: ${{ needs.sync.outputs.nds4j }}
+          path: Nds4j
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Build JVM libraries
+        working-directory: NitroViewer
+        shell: bash
+        env:
+          NDS4J_DIR: ${{ github.workspace }}/Nds4j
+        run: ./scripts/build-jars.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: NitroViewer/web/package-lock.json
+      - name: Cache CheerpJ offline runtime
+        uses: actions/cache@v4
+        with:
+          path: NitroViewer/web/vendor/cheerpj
+          key: cheerpj-4.3-${{ hashFiles('NitroViewer/scripts/vendor-cheerpj.sh') }}
+      - name: Vendor CheerpJ runtime
+        working-directory: NitroViewer
+        shell: bash
+        run: ./scripts/vendor-cheerpj.sh
+      - name: Set matching snapshot version, test and build web app
+        working-directory: NitroViewer/web
+        env:
+          SNAPSHOT_VERSION: ${{ needs.sync.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm version "$SNAPSHOT_VERSION" --no-git-tag-version --allow-same-version
+          npm ci
+          npm test
+          npm run build
+      - name: Package signed (when configured) or unsigned desktop installers
+        working-directory: NitroViewer/web
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.CSC_LINK && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CSC_LINK:-}" ]; then unset CSC_LINK; fi
+          if [ -z "${CSC_KEY_PASSWORD:-}" ]; then unset CSC_KEY_PASSWORD; fi
+          extra=()
+          if [ "${{ matrix.target }}" = 'mac' ] && [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
+            extra+=("-c.mac.notarize.teamId=$APPLE_TEAM_ID")
+          fi
+          npx electron-builder --publish never ${{ matrix.electron_args }} "${extra[@]}"
+      - name: Upload platform installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: nitroviewer-${{ matrix.target }}-${{ needs.sync.outputs.upstream }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            NitroViewer/release/*.dmg
+            NitroViewer/release/*.exe
+            NitroViewer/release/*.zip
+            NitroViewer/release/*.AppImage
+            NitroViewer/release/*.deb
+            NitroViewer/release/*.tar.gz
+
+  publish:
+    name: Publish GitHub Release
+    needs: [sync, build]
+    if: needs.sync.outputs.changed == 'true' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nitroviewer-*-${{ needs.sync.outputs.upstream }}
+          path: dist
+          merge-multiple: true
+      - name: Check packages and generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$(find dist -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+          test -n "$(find dist -maxdepth 1 -type f -name '*.exe' -print -quit)"
+          test -n "$(find dist -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          (cd dist && find . -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+          cat dist/SHA256SUMS
+      - name: Publish once per upstream commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.sync.outputs.tag }}
+          UPSTREAM_SHA: ${{ needs.sync.outputs.upstream }}
+          MIRROR_SHA: ${{ needs.sync.outputs.commit }}
+          NDS4J_SHA: ${{ needs.sync.outputs.nds4j }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists."
+            exit 0
+          fi
+          cat > release-notes.md <<EOF
+          Automated NitroViewer desktop release from [turtleisaac/NitroViewer](https://github.com/turtleisaac/NitroViewer).
+
+          - Upstream revision: $UPSTREAM_SHA
+          - Mirror revision: $MIRROR_SHA
+          - Pinned Nds4j dependency: $NDS4J_SHA
+          - Build and test: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          - Windows (x64/ARM64), macOS (x64/ARM64), Linux (x64)
+          - SHA256SUMS for downloaded installers
+
+          Unsigned builds may show OS security warnings.
+          EOF
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$MIRROR_SHA" \
+            --title "NitroViewer $TAG" \
+            --notes-file release-notes.md \
+            --prerelease
