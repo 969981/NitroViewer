@@ -8,6 +8,9 @@ name: Mirror upstream and release desktop builds
 on:
   schedule:
     - cron: '13,43 * * * *'
+  push:
+    branches: [main]
+    paths: ['.github/workflows/auto-sync-release.yml']
   workflow_dispatch:
     inputs:
       release_current:
@@ -176,7 +179,14 @@ jobs:
           if [ "${{ matrix.target }}" = 'mac' ] && [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
             extra+=("-c.mac.notarize.teamId=$APPLE_TEAM_ID")
           fi
-          npx electron-builder --publish never ${{ matrix.electron_args }} "${extra[@]}"
+          # Two simultaneous macOS DMGs race on /Volumes/NitroViewer during
+          # hdiutil detach. Package the two architectures sequentially.
+          if [ "${{ matrix.target }}" = 'mac' ]; then
+            npx electron-builder --publish never --mac --x64 "${extra[@]}"
+            npx electron-builder --publish never --mac --arm64 "${extra[@]}"
+          else
+            npx electron-builder --publish never ${{ matrix.electron_args }} "${extra[@]}"
+          fi
       - name: Upload platform installers
         uses: actions/upload-artifact@v4
         with:
