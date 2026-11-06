@@ -1,6 +1,8 @@
 # Keep this mirror current with turtleisaac/NitroViewer; publish tested binaries in this repo.
 # This workflow builds the assets itself. GitHub_TOKEN-created releases do not fire
 # the upstream release-desktop.yml workflow, avoiding duplicate release pipelines.
+# A missing release is rebuilt on the next schedule even if code already synced,
+# including the initial baseline snapshot and recovery from a failed build.
 name: Mirror upstream and release desktop builds
 
 on:
@@ -60,10 +62,8 @@ jobs:
             git push origin HEAD:main
             updated=true
           fi
-          if [[ "$updated" == 'false' && "$RELEASE_CURRENT" != 'true' ]]; then
-            echo 'changed=false' >> "$GITHUB_OUTPUT"
-            echo "No new upstream commits ($upstream_sha)."
-            exit 0
+          if [[ "$updated" == 'false' ]]; then
+            echo "No new upstream commits ($upstream_sha); checking for an unpublished snapshot."
           fi
           # A valid semver is required by npm version and Electron app updates.
           # The bumped patch and upstream commit timestamp make newer snapshots newer.
@@ -168,7 +168,8 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.CSC_LINK && 'true' || 'false' }}
         run: |
-          set -euo pipefail
+          # macOS ships Bash 3.2, where nounset can reject an empty array.
+          set -eo pipefail
           if [ -z "${CSC_LINK:-}" ]; then unset CSC_LINK; fi
           if [ -z "${CSC_KEY_PASSWORD:-}" ]; then unset CSC_KEY_PASSWORD; fi
           extra=()
