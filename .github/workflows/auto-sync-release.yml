@@ -125,6 +125,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
+      - name: Preserve LF Java source on Windows for Checkstyle
+        if: runner.os == 'Windows'
+        shell: bash
+        run: git config --global core.autocrlf false
       - name: Checkout exact synced revision
         uses: actions/checkout@v4
         with:
