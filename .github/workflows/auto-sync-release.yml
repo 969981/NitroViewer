@@ -57,13 +57,25 @@ jobs:
           git fetch --no-tags upstream main
           upstream_sha=$(git rev-parse upstream/main)
           updated=false
-          if ! git merge-base --is-ancestor "$upstream_sha" HEAD; then
-            git config user.name 'github-actions[bot]'
-            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            # Preserve mirror changes. On a conflict, fail rather than force-update.
-            git merge --no-ff -m "chore(sync): upstream $upstream_sha" upstream/main
-            git push origin HEAD:main
-            updated=true
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          # Transfer only upstream source changes, never upstream workflow commits.
+          # The Actions token cannot push workflow file changes without workflows permission.
+          baseline=$(git log -1 --format=%B --grep='Upstream-Commit:' | sed -nE 's/^Upstream-Commit: ([0-9a-f]{40})$/\1/p' | head -1)
+          if [[ -z "$baseline" ]]; then
+            baseline=$(git merge-base HEAD upstream/main)
+          fi
+          [[ "$baseline" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Could not find a trusted upstream merge base"; exit 1; }
+          patch="$RUNNER_TEMP/nitroviewer-upstream-source.patch"
+          git diff --binary "$baseline" upstream/main -- . ':(exclude).github/workflows/**' > "$patch"
+          if [[ -s "$patch" ]]; then
+            # If upstream clashes with local source edits, stop instead of overwriting.
+            git apply --3way --index "$patch"
+            if ! git diff --cached --quiet; then
+              git commit -m "chore(sync): upstream source $upstream_sha" -m "Upstream-Commit: $upstream_sha"
+              git push origin HEAD:main
+              updated=true
+            fi
           fi
           if [[ "$updated" == 'false' ]]; then
             echo "No new upstream commits ($upstream_sha); checking for an unpublished snapshot."
