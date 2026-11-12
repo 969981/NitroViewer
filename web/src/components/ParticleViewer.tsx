@@ -1,5 +1,19 @@
 import { useEffect, useState } from "react";
 import { useStore } from "../state/store";
+import { useChangedKey } from "../useChangedKey";
+import { Icon } from "./icons";
+
+/** Pause or play label. */
+function playPause(playing: boolean) {
+  if (playing) return <><Icon name="pause" /> Pause</>;
+  return <><Icon name="play" /> Play</>;
+}
+
+/** The current particle frame, or a note when the effect has none. */
+function frameView(frames: string[], frame: number) {
+  if (frames.length === 0) return <div className="placeholder">no frames</div>;
+  return <img className="pframe" src={frames[frame]} alt="" />;
+}
 
 // SPA effects are rendered to frames server-side (Nds4j ParticleRenderer); the viewer just cycles
 // the pre-rendered frames, so a simple interval is fine (no CheerpJ call during playback).
@@ -13,12 +27,15 @@ export function ParticleViewer() {
   const [playing, setPlaying] = useState(true);
 
   const { container, id } = selection.ref;
-  useEffect(() => {
-    let alive = true;
+  if (useChangedKey(`${romHandle}:${container}:${id}`)) {
     setData(null);
     setErr(undefined);
     setFrame(0);
     setPlaying(true);
+  }
+
+  useEffect(() => {
+    let alive = true;
     client
       .renderParticles(romHandle, { container, id }, 256, 256, 48)
       .then((d) => alive && setData(d))
@@ -47,7 +64,7 @@ export function ParticleViewer() {
         <label className="ctrl">
           <span>Playback</span>
           <button className="play-btn" onClick={() => setPlaying((p) => !p)}>
-            {playing ? "⏸ Pause" : "▶ Play"}
+            {playPause(playing)}
           </button>
         </label>
         <div className="ctrl">
@@ -56,7 +73,7 @@ export function ParticleViewer() {
         </div>
       </div>
       <div className="pviewport">
-        {data.frames.length > 0 ? <img className="pframe" src={data.frames[frame]} alt="" /> : <div className="placeholder">no frames</div>}
+        {frameView(data.frames, frame)}
       </div>
     </div>
   );

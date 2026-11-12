@@ -630,10 +630,23 @@ manifest stub" dev action. The **D/P battle-sprite scan direction** fix already 
 (`editVersion` re-decodes every viewer after any import). Remaining: the NANR import edits the frame's *cell*
 (cell-sized image), not the transformed frame canvas — functional but slightly indirect.
 
+**NARC browsing, cycling, and bookmarks:** [docs/narc-browsing-plan.md](docs/narc-browsing-plan.md).
+
 **Tech debt — mobile/iOS header crowding.** The write-half controls added to the top bar (Undo/Redo,
 Save ROM, dirty badge, status) have made the header cramped on narrow screens and worsened the already-shaky
 iOS layout. Needs a responsive pass: collapse Undo/Redo to icon-only (or an overflow/"⋯" menu) below a
 breakpoint, and re-check the topbar wrap/scroll on iOS Safari. (See the iOS 3D notes in the CheerpJ memory.)
+
+**Tech debt — header Redo doesn't restore a sprite pencil stroke.** Repro: open `nfont.NCGR`, click
+Edit sprite, draw a short line, then Undo (the line disappears and Redo enables), then Redo. The line
+stays gone. Likely in `web/src/components/SpriteEditor.tsx` (~lines 158–167) and its wiring through
+`web/src/state/store.ts` (~847–851). It's pre-existing and happens identically on main, so it wasn't
+introduced by PR #3. Found during PR #3 exploratory QA on 2026-11-09. Medium severity, and it's hit by
+anyone who undoes a stroke.
+
+**Tech debt — browser Back leaves the app.** The app records no navigation in history
+(`web/src/App.tsx` has no history handling), so Back goes to a blank page instead of the previous file.
+Low severity. If fixed, it could push file selections into history with pushState/popstate.
 
 **SEO / discoverability.** On-page is **done**, now incl. ✅ **`FAQPage` JSON-LD** (mirrors the visible FAQ)
 + ✅ **`softwareVersion`**/`isAccessibleForFree`. What's left is **off-platform** (needs the owner):

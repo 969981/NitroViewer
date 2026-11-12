@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import { useChangedKey } from "../useChangedKey";
 import { useStore } from "../state/store";
 import { base64ToBytes } from "../util";
 import { sameHex, snapHex } from "../color";
 import { blitIndexed, floodFill, pixelsEqual } from "../pixelTools";
+import { clearLockedSeed, isLockedSeedPixel } from "../spriteCipher";
 import { useDraftEditor } from "../useDraftEditor";
 import type { ResourceRef } from "../transport";
 import { ColorPicker } from "./ColorPicker";
@@ -50,7 +52,8 @@ export function SpriteEditor({
   const [width, setWidth] = useState(0);
   const [height, setHeight] = useState(0);
   const [bitDepth, setBitDepth] = useState(4);
-  const [scanned, setScanned] = useState(false);
+  const [ciphered, setCiphered] = useState(false);
+  const [seedAtEnd, setSeedAtEnd] = useState(false);
   const [frame, setFrame] = useState<Frame | null>(null);
   const [baseline, setBaseline] = useState<Frame | null>(null);
   const [undoStack, setUndoStack] = useState<Frame[]>([]);
@@ -64,9 +67,11 @@ export function SpriteEditor({
 
   const committedRef = useRef<Frame | null>(null);
   const frameRef = useRef<Frame | null>(null);
-  frameRef.current = frame;
   const hoverRef = useRef(hover);
-  hoverRef.current = hover;
+  useEffect(() => {
+    frameRef.current = frame;
+    hoverRef.current = hover;
+  }, [frame, hover]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const painting = useRef(false);
   const strokeStart = useRef<Frame | null>(null);
@@ -75,10 +80,13 @@ export function SpriteEditor({
   const blockLen = bitDepth === 8 ? 256 : 16;
   const blockStart = bitDepth === 8 ? 0 : Math.max(0, paletteIndex) * 16;
 
-  useEffect(() => {
-    let alive = true;
+  if (useChangedKey(`${romHandle}:${ncgr.container}:${ncgr.id}:${nclr.container}:${nclr.id}:${tilesWidth}:${scanFrontToBack}`)) {
     setErr(undefined);
     setBusy(true);
+  }
+
+  useEffect(() => {
+    let alive = true;
     (async () => {
       const [raster, pal] = await Promise.all([
         client.decodeNcgrIndexed(romHandle, ncgr, tilesWidth, scanFrontToBack),
@@ -91,7 +99,9 @@ export function SpriteEditor({
       setWidth(raster.width);
       setHeight(raster.height);
       setBitDepth(raster.bitDepth);
-      setScanned(!!raster.scanned);
+      setCiphered(!!raster.ciphered);
+      setSeedAtEnd(!!raster.seedAtEnd);
+
       setFrame(f);
       setBaseline(cloneFrame(f));
       committedRef.current = cloneFrame(f);
@@ -188,8 +198,9 @@ export function SpriteEditor({
   };
 
   const paintAt = (buf: Uint8Array, x: number, y: number) => {
-    // Scanned NCGRs store the XOR key in the first decrypted u16 (always reads as index 0).
-    if (scanned && y === 0 && x < (bitDepth === 4 ? 4 : 2)) return;
+    if (isLockedSeedPixel(ciphered, x, y, width, height, bitDepth, seedAtEnd))
+      return; // key word decodes to 0
+
     buf[y * width + x] = Math.max(0, Math.min(maxIndex, selected));
   };
 
@@ -205,13 +216,13 @@ export function SpriteEditor({
       return;
     }
     if (tool === "fill") {
-      if (scanned && p.y === 0 && p.x < (bitDepth === 4 ? 4 : 2)) return;
+      if (isLockedSeedPixel(ciphered, p.x, p.y, width, height, bitDepth, seedAtEnd))
+        return;
+
       const filled = floodFill(frame.pixels, width, height, p.x, p.y, selected, maxIndex);
-      if (scanned) {
-        const z = bitDepth === 4 ? 4 : 2;
-        for (let x = 0; x < z && x < width; x++) filled[x] = 0;
-      }
-      pushCommitted({ pixels: filled, colors: frame.colors.slice() });
+      const kept = clearLockedSeed(filled, ciphered, width, height, bitDepth, seedAtEnd);
+
+      pushCommitted({ pixels: kept, colors: frame.colors.slice() });
       return;
     }
     painting.current = true;
