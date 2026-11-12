@@ -136,6 +136,10 @@ jobs:
           repository: turtleisaac/Nds4j
           ref: ${{ needs.sync.outputs.nds4j }}
           path: Nds4j
+          fetch-depth: 0
+      - name: Restore Nds4j origin/main for Spotless Maven ratchet
+        shell: bash
+        run: git -C Nds4j fetch --no-tags origin main:refs/remotes/origin/main
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
