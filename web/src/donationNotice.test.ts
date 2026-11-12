@@ -76,7 +76,7 @@ describe("donation dismissal", () => {
       setItem: () => {
         throw new Error("denied");
       },
-    } as Storage;
+    } as unknown as Storage;
 
     expect(donationDismissed(blocked)).toBe(false);
     expect(() => dismissDonationNotice(true, blocked, () => undefined)).not.toThrow();
