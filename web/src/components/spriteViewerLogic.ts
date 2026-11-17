@@ -31,6 +31,15 @@ export function unitSlot(unit: SpriteUnit | null, key: "ncgr" | "nclr" | "ncer")
   return unit[key];
 }
 
+/** Saved ref, then the manifest unit, then the nearest sibling. */
+export function pairedRefs(saved: SpritePair, unit: SpriteUnit | null, picked: SpritePair): SpritePair {
+  const ncgr = savedOrUnit(saved.ncgr, unitSlot(unit, "ncgr"), picked.ncgr);
+  const nclr = savedOrUnit(saved.nclr, unitSlot(unit, "nclr"), picked.nclr);
+  const ncer = savedOrUnit(saved.ncer, unitSlot(unit, "ncer"), picked.ncer);
+
+  return { ncgr, nclr, ncer };
+}
+
 /** Pairing chosen when the selection or its container changes. */
 export function nextSpritePair(args: {
   items: ResourceItem[];
@@ -44,13 +53,14 @@ export function nextSpritePair(args: {
   nclrs: ResourceItem[];
   ncers: ResourceItem[];
 }): SpritePair {
+  // Manifest companions, then the nearest sibling of each sprite role.
   const likes = args.items.map((item) => ({ index: item.ref.id, format: item.format }));
   const unit = resolveSpriteUnit(args.gameCode, args.narcPath, args.container, likes, args.id);
-  return {
-    ncgr: savedOrUnit(args.saved.ncgr, unitSlot(unit, "ncgr"), pickSibling(args.ncgrs, args.peers, args.id)),
-    nclr: savedOrUnit(args.saved.nclr, unitSlot(unit, "nclr"), pickSibling(args.nclrs, args.peers, args.id)),
-    ncer: savedOrUnit(args.saved.ncer, unitSlot(unit, "ncer"), pickSibling(args.ncers, args.peers, args.id)),
-  };
+  const ncgr = pickSibling(args.ncgrs, args.peers, args.id);
+  const nclr = pickSibling(args.nclrs, args.peers, args.id);
+  const ncer = pickSibling(args.ncers, args.peers, args.id);
+
+  return pairedRefs(args.saved, unit, { ncgr, nclr, ncer });
 }
 
 /** Resources of one format, in container order. */
@@ -356,6 +366,18 @@ export function requireNclr(nclr: ResourceRef | undefined): ResourceRef {
 export function requireTiles(ncgr: ResourceRef | undefined, nclr: ResourceRef | undefined, message: string): { ncgr: ResourceRef; nclr: ResourceRef } {
   if (!ncgr || !nclr) throw new Error(message);
   return { ncgr, nclr };
+}
+
+const TILESET_BANNER = "The selected tileset isn't compatible with this cell or animation. Pick a different NCGR file.";
+const PALETTE_BANNER = "The selected palette isn't compatible with this cell or animation. Pick a different palette.";
+const CELLS_BANNER = "The selected cells aren't compatible with this cell or animation. Pick a different cell file.";
+
+/** Banner text for a companion error code, or the original message. */
+export function shownSpriteError(message: string): string {
+  if (message === "incompatible-tileset") return TILESET_BANNER;
+  if (message === "incompatible-palette") return PALETTE_BANNER;
+  if (message === "incompatible-cells") return CELLS_BANNER;
+  return message;
 }
 
 /** Require a full animation stack. */
